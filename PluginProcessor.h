@@ -33,6 +33,9 @@ public:
 
     juce::AudioProcessorValueTreeState apvts;
 
+    // Nível de saída (pico por bloco), lido pela interface para os medidores
+    std::atomic<float> outLevelL { 0.0f }, outLevelR { 0.0f };
+
 private:
     static juce::AudioProcessorValueTreeState::ParameterLayout createLayout();
     void setParam (const juce::String& id, float value);
@@ -44,7 +47,8 @@ private:
     juce::dsp::IIR::Filter<float> eqLow[2], eqMid[2], eqHigh[2];
     juce::Reverb reverb;
     juce::Random rng;
-    juce::SmoothedValue<float> build;
+    juce::SmoothedValue<float> build, mixSm, gainSm;
+    juce::AudioBuffer<float> dryBuffer;
 
     float lfoPhase = 0.0f;
     double sampleRate = 44100.0;

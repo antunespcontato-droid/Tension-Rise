@@ -15,15 +15,15 @@ namespace
 
     const Preset presets[] =
     {
-        //  nome                filt  noise rev   stut  drive  low   mid   freq    high
-        { "Init",              0.80f, 0.50f, 0.50f, 0.30f, 0.30f,  0.f,  0.f, 1000.f,  0.f },
-        { "Classic Riser",     1.00f, 0.80f, 0.40f, 0.00f, 0.20f, -2.f,  0.f, 1000.f,  3.f },
-        { "EDM Drop Tension",  0.90f, 0.60f, 0.70f, 0.60f, 0.50f, -3.f,  2.f, 2500.f,  4.f },
-        { "Dark Techno",       0.70f, 0.30f, 0.50f, 0.40f, 0.80f,  3.f, -2.f,  500.f, -3.f },
-        { "Cinematic Swell",   0.60f, 0.70f, 1.00f, 0.00f, 0.10f,  1.f,  0.f,  800.f,  2.f },
-        { "Stutter Panic",     0.50f, 0.20f, 0.30f, 1.00f, 0.60f,  0.f,  3.f, 1800.f,  1.f },
-        { "Lo-fi Lift",        0.60f, 0.40f, 0.60f, 0.20f, 0.90f,  2.f, -3.f, 1200.f, -6.f },
-        { "Noise Storm",       0.80f, 1.00f, 0.80f, 0.50f, 0.70f, -4.f,  1.f, 3500.f,  5.f },
+        //  nome                    filt   noise  rev    stut   drive   low    mid   freq     high
+        { "Init",                  0.80f, 0.50f, 0.50f, 0.30f, 0.30f,  0.f,   0.f, 1000.f,   0.f },
+        { "Prog Psy Rise",         0.90f, 0.50f, 0.50f, 0.15f, 0.25f, -2.f,   0.f, 1000.f,   2.f },
+        { "Forest Build",          0.75f, 0.40f, 0.90f, 0.10f, 0.15f,  0.f,  -1.f,  800.f,   3.f },
+        { "Full-On Lift",          1.00f, 0.80f, 0.60f, 0.40f, 0.40f, -3.f,   2.f, 2500.f,   4.f },
+        { "Snare Roll Tension",    0.60f, 0.90f, 0.40f, 1.00f, 0.50f, -4.f,   3.f, 3000.f,   3.f },
+        { "Dark Psy Tension",      0.70f, 0.50f, 0.60f, 0.50f, 0.85f,  2.f,  -2.f,  400.f,  -2.f },
+        { "Hypnotic Rise",         0.85f, 0.30f, 0.80f, 0.35f, 0.30f, -1.f,   1.f, 1200.f,   1.f },
+        { "Pre-Drop Wash",         1.00f, 1.00f, 1.00f, 0.60f, 0.60f, -6.f,   0.f, 1000.f,   5.f },
     };
 
     constexpr int numPresets = (int) (sizeof (presets) / sizeof (presets[0]));
@@ -80,6 +80,8 @@ juce::AudioProcessorValueTreeState::ParameterLayout TensionProcessor::createLayo
     layout.add (std::make_unique<P> (juce::ParameterID { "eqmid",     1 }, "EQ Mid",       gain, 0.0f,    db));
     layout.add (std::make_unique<P> (juce::ParameterID { "eqmidfreq", 1 }, "EQ Mid Freq",  freq, 1000.0f, hz));
     layout.add (std::make_unique<P> (juce::ParameterID { "eqhigh",    1 }, "EQ High",      gain, 0.0f,    db));
+    layout.add (std::make_unique<P> (juce::ParameterID { "mix",      1 }, "Mix",         unit, 1.0f,    pct));
+    layout.add (std::make_unique<P> (juce::ParameterID { "output",   1 }, "Output",      gain, 0.0f,    db));
     return layout;
 }
 
@@ -161,6 +163,12 @@ void TensionProcessor::prepareToPlay (double sr, int samplesPerBlock)
     reverb.setSampleRate (sr);
     reverb.reset();
 
+    dryBuffer.setSize (2, samplesPerBlock);
+    mixSm.reset (sr, 0.02);
+    mixSm.setCurrentAndTargetValue (apvts.getRawParameterValue ("mix")->load());
+    gainSm.reset (sr, 0.02);
+    gainSm.setCurrentAndTargetValue (juce::Decibels::decibelsToGain (apvts.getRawParameterValue ("output")->load()));
+
     build.reset (sr, 0.05);
     build.setCurrentAndTargetValue (apvts.getRawParameterValue ("build")->load());
     lfoPhase = 0.0f;
@@ -172,6 +180,11 @@ void TensionProcessor::processBlock (juce::AudioBuffer<float>& buf, juce::MidiBu
 
     const int nCh = juce::jmin (buf.getNumChannels(), 2);
     const int n   = buf.getNumSamples();
+
+    // Guarda o sinal original para o controle Mix (dry/wet)
+    dryBuffer.setSize (2, n, false, false, true);
+    for (int ch = 0; ch < nCh; ++ch)
+        dryBuffer.copyFrom (ch, 0, buf, ch, 0, n);
 
     const float amtFilter  = apvts.getRawParameterValue ("filter")->load();
     const float amtNoise   = apvts.getRawParameterValue ("noise")->load();
@@ -253,6 +266,26 @@ void TensionProcessor::processBlock (juce::AudioBuffer<float>& buf, juce::MidiBu
             d[i] = x;
         }
     }
+
+    // Mix (dry/wet) + ganho de saída
+    mixSm.setTargetValue (apvts.getRawParameterValue ("mix")->load());
+    gainSm.setTargetValue (juce::Decibels::decibelsToGain (apvts.getRawParameterValue ("output")->load()));
+
+    for (int i = 0; i < n; ++i)
+    {
+        const float m  = mixSm.getNextValue();
+        const float gn = gainSm.getNextValue();
+
+        for (int ch = 0; ch < nCh; ++ch)
+        {
+            auto* d = buf.getWritePointer (ch);
+            d[i] = (dryBuffer.getSample (ch, i) * (1.0f - m) + d[i] * m) * gn;
+        }
+    }
+
+    outLevelL.store (buf.getMagnitude (0, 0, n));
+    if (nCh > 1)
+        outLevelR.store (buf.getMagnitude (1, 0, n));
 }
 
 juce::AudioProcessorEditor* TensionProcessor::createEditor()

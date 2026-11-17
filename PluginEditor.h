@@ -33,15 +33,29 @@ private:
     void addKnob (Knob&, const juce::String& paramId, const juce::String& text);
     static void placeKnob (Knob&, juce::Rectangle<int> area);
     void timerCallback() override;
+    void stepPreset (int delta);
+
+    float param (const char* id) const;
+    void drawPanel (juce::Graphics&, juce::Rectangle<int>, const juce::String& title) const;
+    void drawTensionDisplay (juce::Graphics&, juce::Rectangle<int>, float build, juce::Colour accent) const;
+    void drawEqDisplay (juce::Graphics&, juce::Rectangle<int>) const;
+    void drawMeters (juce::Graphics&, juce::Rectangle<int>) const;
 
     TensionProcessor& proc;
     TellusLookAndFeel laf;
     juce::Image logo;
-    juce::Rectangle<int> logoArea;
+
     juce::ComboBox presetBox;
-    float lastBuild = -1.0f;
+    juce::TextButton prevBtn { "<" }, nextBtn { ">" };
+
+    juce::Rectangle<int> logoArea, meterArea;
+    juce::Rectangle<int> panelBuild, panelDisplay, panelFx, panelOut, panelEq;
+    juce::Rectangle<int> displayArea, eqDisplayArea;
+
+    float meterL = 0.0f, meterR = 0.0f;
 
     Knob buildK, filterK, noiseK, reverbK, stutterK, driveK;
+    Knob mixK, outputK;
     Knob eqLowK, eqMidK, eqFreqK, eqHighK;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (TensionEditor)
