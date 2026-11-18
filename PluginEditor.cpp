@@ -99,8 +99,82 @@ void TellusLookAndFeel::drawRotarySlider (juce::Graphics& g, int x, int y, int w
 }
 
 //==============================================================================
+StepEditor::StepEditor (juce::AudioProcessorValueTreeState& state, const std::atomic<float>& phaseRef)
+    : apvts (state), phase (phaseRef)
+{
+    setMouseCursor (juce::MouseCursor::CrosshairCursor);
+}
+
+void StepEditor::paint (juce::Graphics& g)
+{
+    const auto r = getLocalBounds().toFloat();
+    g.setColour (kBg);
+    g.fillRoundedRectangle (r, 4.0f);
+
+    const float cy = r.getCentreY();
+    g.setColour (juce::Colours::white.withAlpha (0.12f));
+    g.fillRect (r.getX() + 6.0f, cy - 0.5f, r.getWidth() - 12.0f, 1.0f);
+
+    const float stepW = (r.getWidth() - 12.0f) / 16.0f;
+    const int playing = juce::jlimit (0, 15, (int) (phase.load() * 16.0f));
+
+    for (int i = 0; i < 16; ++i)
+    {
+        const float v = apvts.getRawParameterValue ("lfostep" + juce::String (i))->load();
+        const float x = r.getX() + 6.0f + stepW * (float) i;
+        const float h = v * (r.getHeight() * 0.5f - 14.0f);
+
+        g.setColour (juce::Colours::white.withAlpha (i % 4 == 0 ? 0.08f : 0.03f));
+        g.fillRect (x, r.getY() + 20.0f, stepW - 2.0f, r.getHeight() - 40.0f);
+
+        g.setColour (i == playing ? juce::Colours::white : kOrange);
+        if (h >= 0.0f) g.fillRect (x + 1.0f, cy - h, stepW - 4.0f, juce::jmax (2.0f, h));
+        else           g.fillRect (x + 1.0f, cy, stepW - 4.0f, juce::jmax (2.0f, -h));
+    }
+
+    g.setColour (kGrey);
+    g.setFont (fontOf (11.0f, true));
+    g.drawText ("CUSTOM  -  click and drag to draw the 16 steps", (int) r.getX() + 12, (int) r.getY() + 5, 400, 14,
+                juce::Justification::centredLeft);
+}
+
+void StepEditor::setStep (int index, float value)
+{
+    if (auto* p = apvts.getParameter ("lfostep" + juce::String (index)))
+    {
+        p->beginChangeGesture();
+        p->setValueNotifyingHost (p->convertTo0to1 (value));
+        p->endChangeGesture();
+    }
+}
+
+void StepEditor::setFromMouse (const juce::MouseEvent& e)
+{
+    const auto r = getLocalBounds().toFloat();
+    const float stepW = (r.getWidth() - 12.0f) / 16.0f;
+    const int idx = juce::jlimit (0, 15, (int) ((e.position.x - 6.0f) / stepW));
+    const float v = juce::jlimit (-1.0f, 1.0f, 1.0f - 2.0f * (e.position.y - 14.0f) / (r.getHeight() - 28.0f));
+
+    // Arrastando rápido pode pular passos: preenche os do meio por interpolação
+    if (lastIdx >= 0 && std::abs (idx - lastIdx) > 1)
+    {
+        const int dir = idx > lastIdx ? 1 : -1;
+        for (int k = lastIdx + dir; k != idx; k += dir)
+            setStep (k, lastVal + (v - lastVal) * (float) (k - lastIdx) / (float) (idx - lastIdx));
+    }
+    setStep (idx, v);
+    lastIdx = idx;
+    lastVal = v;
+    repaint();
+}
+
+void StepEditor::mouseDown (const juce::MouseEvent& e) { lastIdx = -1; setFromMouse (e); }
+void StepEditor::mouseDrag (const juce::MouseEvent& e) { setFromMouse (e); }
+void StepEditor::mouseUp (const juce::MouseEvent&)     { lastIdx = -1; }
+
+//==============================================================================
 TensionEditor::TensionEditor (TensionProcessor& p)
-    : juce::AudioProcessorEditor (&p), proc (p)
+    : juce::AudioProcessorEditor (&p), proc (p), stepEditor (p.apvts, p.uiLfoPhase)
 {
     setLookAndFeel (&laf);
     logo = juce::ImageCache::getFromMemory (BinaryData::logo_png, BinaryData::logo_pngSize);
@@ -132,16 +206,90 @@ TensionEditor::TensionEditor (TensionProcessor& p)
     addToggle (gateAccelT, "gateaccel", "ACCELERATE",    1);
     addKnob   (gateDepthK, "stutter",   "DEPTH",         1);
 
+    // RHYTHM
+    addToggle (brOnT,   "bron",   "BEAT REPEAT", 2);
+    addCombo  (brRateC, "brrate", "RATE",        2);
+    addToggle (brSyncT, "brsync", "SYNC",        2);
+    addKnob (brTimeK,      "brtime",      "TIME (ms)",  2);
+    addKnob (brAccelK,     "braccel",     "ACCEL",      2);
+    addKnob (brIntensityK, "brintensity", "INTENSITY",  2);
+    addKnob (brFeedbackK,  "brfeedback",  "FEEDBACK",   2);
+    addKnob (brMixK,       "brmix",       "MIX",        2);
+    addKnob (brVarK,       "brvar",       "VARIATION",  2);
+    addKnob (brStartK,     "brstart",     "START AT",   2);
+
+    addToggle (srOnT,   "sron",   "SNARE ROLL", 2);
+    addCombo  (srRateC, "srrate", "RATE",       2);
+    addToggle (srSyncT, "srsync", "SYNC",       2);
+    addKnob (srTimeK,      "srtime",      "TIME (ms)", 2);
+    addKnob (srVelK,       "srvel",       "VELOCITY",  2);
+    addKnob (srIntensityK, "srintensity", "INTENSITY", 2);
+    addKnob (srVolK,       "srvol",       "VOLUME",    2);
+    addKnob (srAccelK,     "sraccel",     "ACCEL",     2);
+    addKnob (srVarK,       "srvar",       "VARIATION", 2);
+    addKnob (srMixK,       "srmix",       "MIX",       2);
+    addKnob (srStartK,     "srstart",     "START AT",  2);
+
+    addAndMakeVisible (loadBtn);
+    addAndMakeVisible (clearBtn);
+    pageComps[2].push_back (&loadBtn);
+    pageComps[2].push_back (&clearBtn);
+
+    loadBtn.onClick = [this]
+    {
+        chooser = std::make_unique<juce::FileChooser> ("Choose a snare or percussion sample", juce::File(), "*.wav;*.aif;*.aiff;*.flac");
+        juce::Component::SafePointer<TensionEditor> safe (this);
+        chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
+                              [safe] (const juce::FileChooser& fc)
+                              {
+                                  const auto f = fc.getResult();
+                                  if (safe != nullptr && f.existsAsFile())
+                                  {
+                                      safe->proc.loadSample (f);
+                                      safe->repaint();
+                                  }
+                              });
+    };
+    clearBtn.onClick = [this] { proc.clearSample(); repaint(); };
+
+    // SPACE
+    addToggle (dlOnT,     "dlon",     "DELAY",        3);
+    addToggle (dlSyncT,   "dlsync",   "SYNC",         3);
+    addCombo  (dlRateC,   "dlrate",   "DIVISION",     3);
+    addToggle (dlFollowT, "dlfollow", "FOLLOW BUILD", 3);
+    addKnob (dlTimeK,   "dlms",     "TIME (ms)", 3);
+    addKnob (dlFbK,     "dlfb",     "FEEDBACK",  3);
+    addKnob (dlRiseK,   "dlrise",   "FB RISE",   3);
+    addKnob (dlFilterK, "dlfilter", "FILTER",    3);
+    addKnob (dlStereoK, "dlstereo", "PING-PONG", 3);
+    addKnob (dlMixK,    "dlmix",    "MIX",       3);
+
+    addKnob (revAmountK, "reverb",   "AMOUNT",    3);
+    addKnob (revSizeK,   "revsize",  "SIZE",      3);
+    addKnob (revDampK,   "revdamp",  "DAMPING",   3);
+    addKnob (revWidthK,  "revwidth", "WIDTH",     3);
+    addKnob (revPreK,    "revpre",   "PRE-DELAY", 3);
+
+    addCombo  (lfoDestC,  "lfodest",  "DESTINATION", 3);
+    addCombo  (lfoShapeC, "lfoshape", "SHAPE",       3);
+    addCombo  (lfoRateC,  "lforate",  "RATE",        3);
+    addToggle (lfoSyncT,  "lfosync",  "SYNC",        3);
+    addToggle (lfoRetrigT,"lforetrig","RETRIGGER",   3);
+    addKnob (lfoHzK,     "lfohz",     "RATE (Hz)", 3);
+    addKnob (lfoAmountK, "lfoamount", "AMOUNT",    3);
+    addKnob (lfoPhaseK,  "lfophase",  "PHASE",     3);
+    addChildComponent (stepEditor);
+
     // FILTROS & ESTÉREO
     addToggle (panOnT,    "panon",    "AUTO PAN",  2);
     addCombo  (panShapeC, "panshape", "SHAPE",     2);
     addCombo  (panRateC,  "panrate",  "RATE",      2);
     addToggle (panSyncT,  "pansync",  "SYNC",      2);
-    addToggle (panBassT,  "panbass",  "BASS MONO", 2);
+    addToggle (panBassT,  "panbass",  "BASS MONO", 4);
     addKnob   (panDepthK, "pandepth", "DEPTH",     2);
     addKnob   (panPhaseK, "panphase", "PHASE",     2);
     addKnob   (panWidthK, "panwidth", "WIDTH",     2);
-    addKnob   (panHzK,    "panhz",    "RATE (Hz)", 2);
+    addKnob   (panHzK,    "panhz",    "RATE (Hz)", 4);
     addToggle (lcOnT,     "lcon",     "LOW CUT",   2);
     addCombo  (lcSlopeC,  "lcslope",  "SLOPE",     2);
     addKnob   (lcFreqK,   "lcfreq",   "FREQ",      2);
@@ -150,8 +298,8 @@ TensionEditor::TensionEditor (TensionProcessor& p)
     addKnob   (hcFreqK,   "hcfreq",   "FREQ",      2);
 
     // Abas
-    const char* tabNames[3] = { "MASTER", "BUILD ENGINE", "FILTERS & STEREO" };
-    for (int i = 0; i < 3; ++i)
+    const char* tabNames[5] = { "MASTER", "ENGINE", "RHYTHM", "SPACE", "FILTER/PAN" };
+    for (int i = 0; i < 5; ++i)
     {
         tabBtn[i].setButtonText (tabNames[i]);
         tabBtn[i].setClickingTogglesState (true);
@@ -246,9 +394,10 @@ void TensionEditor::placeCombo (Combo& c, juce::Rectangle<int> area)
 void TensionEditor::setPage (int newPage)
 {
     page = newPage;
-    for (int p = 0; p < 3; ++p)
+    for (int p = 0; p < 5; ++p)
         for (auto* c : pageComps[p])
             c->setVisible (p == page);
+    stepEditor.setVisible (page == 3 && (int) param ("lfoshape") == 6);
     repaint();
 }
 
@@ -264,7 +413,7 @@ void TensionEditor::stepPreset (int delta)
     presetBox.setSelectedItemIndex (idx, juce::sendNotificationSync);
 }
 
-float TensionEditor::param (const char* id) const
+float TensionEditor::param (const juce::String& id) const
 {
     return proc.apvts.getRawParameterValue (id)->load();
 }
@@ -279,6 +428,10 @@ void TensionEditor::timerCallback()
     if (buildK.slider.isEnabled() == autoMode)
         buildK.slider.setEnabled (! autoMode);
 
+    const bool wantSteps = page == 3 && (int) param ("lfoshape") == 6;
+    if (stepEditor.isVisible() != wantSteps)
+        stepEditor.setVisible (wantSteps);
+
     repaint();
 }
 
@@ -290,9 +443,9 @@ void TensionEditor::resized()
     presetBox.setBounds (330, 18, 240, 28);
     nextBtn.setBounds   (576, 18, 30, 28);
 
-    for (int i = 0; i < 3; ++i)
-        tabBtn[i].setBounds (16 + i * 128, 70, 124, 24);
-    modeC.box.setBounds (452, 70, 120, 24);
+    for (int i = 0; i < 5; ++i)
+        tabBtn[i].setBounds (16 + i * 84, 70, 80, 24);
+    modeC.box.setBounds (490, 70, 100, 24);
     syncArea = { 600, 68, 284, 28 };
 
     // MASTER
@@ -330,6 +483,55 @@ void TensionEditor::resized()
     gateAccelT.button.setBounds (116, 532, 102, 26);
     placeKnob (gateDepthK, { 214, 472, 112, 120 });
     gateHintArea = { 28, 574, 298, 80 };
+
+    // RHYTHM
+    panelBR = { 16, 100, 868, 270 };
+    panelSR = { 16, 378, 868, 282 };
+
+    brOnT.button.setBounds (28, 148, 110, 26);
+    placeCombo (brRateC, { 150, 134, 110, 44 });
+    brSyncT.button.setBounds (274, 148, 64, 26);
+    Knob* brk[] = { &brTimeK, &brAccelK, &brIntensityK, &brFeedbackK, &brMixK, &brVarK, &brStartK };
+    for (int i = 0; i < 7; ++i)
+        placeKnob (*brk[i], { 28 + i * 116, 186, 112, 166 });
+
+    srOnT.button.setBounds (28, 420, 110, 26);
+    placeCombo (srRateC, { 150, 406, 110, 44 });
+    srSyncT.button.setBounds (274, 420, 64, 26);
+    loadBtn.setBounds  (352, 420, 120, 26);
+    clearBtn.setBounds (478, 420, 70, 26);
+    sampleNameArea = { 560, 420, 314, 26 };
+    Knob* srk[] = { &srTimeK, &srVelK, &srIntensityK, &srVolK, &srAccelK, &srVarK, &srMixK, &srStartK };
+    for (int i = 0; i < 8; ++i)
+        placeKnob (*srk[i], { 28 + i * 101, 458, 97, 192 });
+
+    // SPACE
+    panelDelay = {  16, 100, 560, 270 };
+    panelRev   = { 588, 100, 296, 270 };
+    panelLfo   = {  16, 378, 868, 282 };
+
+    dlOnT.button.setBounds (28, 148, 70, 26);
+    dlSyncT.button.setBounds (108, 148, 64, 26);
+    placeCombo (dlRateC, { 184, 134, 110, 44 });
+    dlFollowT.button.setBounds (308, 148, 130, 26);
+    Knob* dlk[] = { &dlTimeK, &dlFbK, &dlRiseK, &dlFilterK, &dlStereoK, &dlMixK };
+    for (int i = 0; i < 6; ++i)
+        placeKnob (*dlk[i], { 28 + i * 89, 190, 85, 168 });
+
+    Knob* rvk[] = { &revAmountK, &revSizeK, &revDampK, &revWidthK, &revPreK };
+    for (int i = 0; i < 5; ++i)
+        placeKnob (*rvk[i], { 600 + (i % 3) * 92, 134 + (i / 3) * 118, 88, 114 });
+
+    placeCombo (lfoDestC,  { 28, 404, 150, 44 });
+    placeCombo (lfoShapeC, { 190, 404, 120, 44 });
+    placeCombo (lfoRateC,  { 322, 404, 90, 44 });
+    lfoSyncT.button.setBounds (28, 462, 64, 26);
+    lfoRetrigT.button.setBounds (100, 462, 110, 26);
+    placeKnob (lfoHzK,     { 28, 496, 120, 160 });
+    placeKnob (lfoAmountK, { 154, 496, 120, 160 });
+    placeKnob (lfoPhaseK,  { 280, 496, 120, 160 });
+    lfoDisplayArea = { 424, 404, 448, 244 };
+    stepEditor.setBounds (lfoDisplayArea);
 
     // FILTROS & ESTÉREO
     panelPan = { 16, 100, 868, 250 };
@@ -780,6 +982,71 @@ void TensionEditor::drawEqDisplay (juce::Graphics& g, juce::Rectangle<int> area)
     g.drawText ("-12", (int) r.getX() + 4, juce::roundToInt (dbToY (-12.0f)), 30, 12, juce::Justification::centredLeft);
 }
 
+void TensionEditor::drawLfoDisplay (juce::Graphics& g, juce::Rectangle<int> area, juce::Colour accent) const
+{
+    const auto r = area.toFloat();
+    g.setColour (kBg);
+    g.fillRoundedRectangle (r, 4.0f);
+
+    const int shape = (int) param ("lfoshape"), dest = (int) param ("lfodest");
+    const float amount = param ("lfoamount");
+    float steps[16];
+    for (int i = 0; i < 16; ++i)
+        steps[i] = param ("lfostep" + juce::String (i));
+
+    auto plot = r.reduced (16.0f, 34.0f);
+    g.setColour (juce::Colours::white.withAlpha (0.08f));
+    g.drawHorizontalLine (juce::roundToInt (plot.getCentreY()), plot.getX(), plot.getRight());
+    for (int q = 0; q <= 4; ++q)
+        g.drawVerticalLine (juce::roundToInt (plot.getX() + plot.getWidth() * (float) q / 4.0f), plot.getY(), plot.getBottom());
+
+    const float rndPattern[4] = { 0.6f, -0.8f, 0.3f, -0.5f };    // exemplo do formato (S&H)
+    auto yFor = [&] (float v) { return plot.getCentreY() - v * amount * (plot.getHeight() * 0.5f); };
+
+    juce::Path p;
+    for (int i = 0; i <= 200; ++i)
+    {
+        const float t = (float) i / 200.0f;
+        const float v = tr::lfoWave (shape, juce::jmin (0.9999f, t), rndPattern[juce::jmin (3, (int) (t * 4.0f))], steps);
+        const float x = plot.getX() + plot.getWidth() * t;
+        if (i == 0) p.startNewSubPath (x, yFor (v)); else p.lineTo (x, yFor (v));
+    }
+
+    const float alpha = dest == 0 ? 0.35f : 1.0f;
+    g.setColour (accent.withAlpha (alpha));
+    g.strokePath (p, juce::PathStrokeType (2.0f));
+
+    if (dest != 0 && proc.uiSync.load() > 0)
+    {
+        const float x = plot.getX() + plot.getWidth() * proc.uiLfoPhase.load();
+        g.setColour (juce::Colours::white.withAlpha (0.7f));
+        g.drawVerticalLine (juce::roundToInt (x), plot.getY(), plot.getBottom());
+        g.fillEllipse (x - 4.5f, plot.getCentreY() - proc.uiLfoVal.load() * (plot.getHeight() * 0.5f) - 4.5f, 9.0f, 9.0f);
+    }
+
+    static const char* destNames[] = { "OFF", "FILTER CUTOFF", "RESONANCE", "PAN", "STEREO WIDTH", "VOLUME", "DELAY MIX", "DELAY FEEDBACK", "DRIVE" };
+    static const char* shapeNames[] = { "SINE", "TRIANGLE", "SQUARE", "SAW UP", "SAW DOWN", "RANDOM", "CUSTOM" };
+
+    g.setFont (fontOf (11.0f, true));
+    g.setColour (kGrey);
+    g.drawText ("LFO", (int) r.getX() + 12, (int) r.getY() + 8, 30, 14, juce::Justification::centredLeft);
+    g.setColour (accent);
+    g.drawText (juce::String (shapeNames[juce::jlimit (0, 6, shape)]) + "  >  " + destNames[juce::jlimit (0, 8, dest)],
+                (int) r.getX() + 44, (int) r.getY() + 8, 260, 14, juce::Justification::centredLeft);
+
+    const bool sync = param ("lfosync") > 0.5f;
+    g.setColour (kGrey);
+    g.drawText (sync ? juce::String ("SYNC  ") + tr::divisionName ((int) param ("lforate")) : juce::String (param ("lfohz"), 2) + " Hz  (free)",
+                (int) r.getRight() - 172, (int) r.getY() + 8, 160, 14, juce::Justification::centredRight);
+
+    if (dest == 0)
+    {
+        g.setColour (juce::Colours::white.withAlpha (0.5f));
+        g.setFont (fontOf (12.0f, true));
+        g.drawText ("Choose a destination to activate the LFO", r.toNearestInt().withTrimmedTop (30), juce::Justification::centred);
+    }
+}
+
 void TensionEditor::paint (juce::Graphics& g)
 {
     const float b = proc.uiBuild.load();
@@ -820,6 +1087,14 @@ void TensionEditor::paint (juce::Graphics& g)
     g.drawText ("MODE", 410, 70, 40, 24, juce::Justification::centredLeft);
     drawSyncStatus (g, syncArea);
 
+    // Estado dos módulos rítmicos (engatam quando o build chega ao ponto "Start")
+    auto statusFor = [&] (bool on, float start) -> std::pair<juce::String, bool>
+    {
+        if (! on)       return { "OFF", false };
+        if (b >= start - 1.0e-6f) return { "ENGAGED", true };
+        return { "WAITING  (build " + juce::String (juce::roundToInt (start * 100.0f)) + "%)", false };
+    };
+
     switch (page)
     {
         case 0:
@@ -845,6 +1120,33 @@ void TensionEditor::paint (juce::Graphics& g)
                               "Sync desligado usa uma taxa livre em Hz.", gateHintArea, juce::Justification::topLeft, 4);
             break;
         }
+
+        case 2:
+        {
+            drawPanel (g, panelBR, "BEAT REPEAT");
+            drawPanel (g, panelSR, "SNARE ROLL");
+
+            const auto br = statusFor (param ("bron") > 0.5f, param ("brstart"));
+            const auto sr = statusFor (param ("sron") > 0.5f, param ("srstart"));
+            g.setFont (fontOf (11.0f, true));
+            g.setColour (br.second ? accent : kGrey);
+            g.drawText (br.first, panelBR.getRight() - 300, panelBR.getY() + 7, 288, 16, juce::Justification::centredRight);
+            g.setColour (sr.second ? accent : kGrey);
+            g.drawText (sr.first, panelSR.getRight() - 300, panelSR.getY() + 7, 288, 16, juce::Justification::centredRight);
+
+            g.setColour (kGrey);
+            g.setFont (fontOf (11.5f));
+            const auto name = proc.getSampleName();
+            g.drawText (name.isEmpty() ? "SAMPLE: internal snare" : "SAMPLE: " + name, sampleNameArea, juce::Justification::centredLeft);
+            break;
+        }
+
+        case 3:
+            drawPanel (g, panelDelay, "DELAY");
+            drawPanel (g, panelRev,   "REVERB");
+            drawPanel (g, panelLfo,   "LFO");
+            drawLfoDisplay (g, lfoDisplayArea, accent);
+            break;
 
         default:
             drawPanel (g, panelPan, "AUTO PAN & STEREO");

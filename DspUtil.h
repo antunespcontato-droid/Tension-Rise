@@ -167,4 +167,20 @@ inline double cutMagnitude (bool highPass, double freq, int slopeIdx, double f, 
     }
     return m;
 }
+//==============================================================================
+// Formas de onda do motor de LFO (fase em [0,1), resultado em [-1,1])
+// 0 Sine, 1 Triangle, 2 Square, 3 Saw Up, 4 Saw Down, 5 Random, 6 Custom (16 passos)
+inline float lfoWave (int shape, float phase, float rnd, const float* steps16)
+{
+    switch (shape)
+    {
+        case 1:  return phase < 0.25f ? 4.0f * phase : (phase < 0.75f ? 2.0f - 4.0f * phase : 4.0f * phase - 4.0f);
+        case 2:  return phase < 0.5f ? 1.0f : -1.0f;
+        case 3:  return 2.0f * phase - 1.0f;
+        case 4:  return 1.0f - 2.0f * phase;
+        case 5:  return rnd;
+        case 6:  return steps16[std::min (15, (int) (phase * 16.0f))];
+        default: return std::sin ((float) (2.0 * kPi) * phase);
+    }
+}
 } // namespace tr
